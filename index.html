@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>GTFS Preview</title>
+  <meta name="viewport" content="initial-scale=1.0, maximum-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.4.0/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/jszip@3.2.1/dist/jszip.min.js"></script>
+  <script src="https://code.jquery.com/jquery-3.4.0.min.js"></script>
+  <script src="csv.min.js"></script>
+</head>
+
+<body>
+  <div id="map" style="position:absolute;top:0;left:0;right:0;bottom:0;"></div>
+  <script>
+    function parse(zip, filename) {
+      return zip.file(filename).async("text").then(text => {
+        var rows = CSV.parse(text);
+        var head = rows.shift();
+        return rows.filter(row => row.length === head.length).map(row => {
+          var obj = {};
+          head.forEach((key, i) => {
+            obj[key] = row[i]
+          });
+          return obj;
+        });
+      });
+    }
+
+    var map = null;
+
+    function render(zip) {
+      if (map) map.remove();
+      map = L.map("map");
+      map.zoomControl.setPosition("bottomright");
+
+      parse(zip, "agency.txt").then(agency => {
+        $("#head").empty();
+        agency.forEach(a => {
+          if (a.agency_url !== "") {
+            map.attributionControl.addAttribution(`<a href="${a.agency_url}">${a.agency_name}</a>`);
+          } else {
+            map.attributionControl.addAttribution(`${a.agency_name}`);
+          }
+        });
+
+      });
+
+      var nodes = {};
+
+      parse(zip, "stops.txt").then(stops => {
+        stops.forEach((a, i) => {
+          nodes[a.stop_id] = [parseFloat(a["stop_lat"]), parseFloat(a["stop_lon"])];
+        });
+        map.fitBounds(L.latLngBounds(
+          Object.values(nodes).reduce((acc, cur) => [Math.min(acc[0], cur[0]), Math.min(acc[1], cur[1])]),
+          Object.values(nodes).reduce((acc, cur) => [Math.max(acc[0], cur[0]), Math.max(acc[1], cur[1])])
+        ));
+        L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png", {
+          attribution: "<a href='http://maps.gsi.go.jp/development/ichiran.html'>地理院タイル</a>"
+        }).addTo(map);
+        return parse(zip, "stop_times.txt");
+      }).then(stopTimes => {
+        stopTimes.sort((a, b) => {
+          if (a.trip_id < b.trip_id) return -1;
+          else if (a.trip_id > b.trip_id) return 1;
+          else return a.stop_sequence - b.stop_sequence;
+        });
+
+        var links = {};
+        var prev = null;
+        stopTimes.forEach(next => {
+          if (prev && prev.trip_id === next.trip_id) {
+            var a = prev.stop_id;
+            var b = next.stop_id;
+            if (a < b) {
+              if (!links[a]) links[a] = [];
+              if (links[a].indexOf(b) === -1) links[a].push(b);
+            } else {
+              if (!links[b]) links[b] = [];
+              if (links[b].indexOf(a) === -1) links[b].push(a);
+            }
+          }
+          prev = next;
+        });
+        Object.keys(links).forEach(a => {
+          links[a].forEach(b => {
+            L.polyline([nodes[a], nodes[b]], {
+              weight: 8,
+              color: "navy"
+            }).addTo(map);
+          });
+        });
+
+        Object.values(nodes).forEach(a => {
+          L.circleMarker(a, {
+            radius: 4,
+            weight: 1,
+            color: "navy",
+            fillColor: "orange",
+            fillOpacity: 1.0
+          }).addTo(map);
+        });
+      });
+    }
+
+    $("#map").on("dragover", function(e) {
+      return false;
+    }).on("drop", function(e) {
+      var dt = e.originalEvent.dataTransfer;
+      if (dt.items) {
+        try {
+          var file = dt.items[0].getAsFile();
+          JSZip.loadAsync(file).then(zip => {
+            render(zip);
+          });
+        } catch (e) {
+          alert(e);
+        }
+      }
+      return false;
+    });
+
+    fetch("sample/gtfs.1001.kanetsu_kotu.zip")
+      .then(response => response.blob())
+      .then(blob => new JSZip().loadAsync(blob))
+      .then(zip => {
+        render(zip);
+      });
+  </script>
+</body>
+
+</html>
